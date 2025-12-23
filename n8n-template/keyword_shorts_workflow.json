@@ -1,0 +1,400 @@
+{
+  "name": "Keyword → Unique Content → Short Video → Publish",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "hour": 9,
+              "minute": 0
+            }
+          ]
+        }
+      },
+      "name": "Cron Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [250, 250]
+    },
+    {
+      "parameters": {
+        "requestMethod": "GET",
+        "url": "={{ ($env.FFMPEG_SERVICE_URL || 'http://localhost:3000') + '/check?key=' + encodeURIComponent($json.keyword || $json.body || 'untitled') }}",
+        "options": {}
+      },
+      "name": "Check Duplicate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [375, 250]
+    },
+    {
+      "parameters": {
+        "requestMethod": "GET",
+        "url": "https://serpapi.com/search.json",
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "q",
+              "value": "={{$json[\"keyword\"] || $json[\"body\"] || 'YOUR_KEYWORD'}}"
+            },
+            {
+              "name": "engine",
+              "value": "google"
+            },
+            {
+              "name": "api_key",
+              "value": "={{$env.SERPAPI_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Google / SerpAPI Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [500, 250]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Extract title/snippets and create a concise brief\nconst results = items[0].json.organic_results || [];\nconst top = results.slice(0,5).map(r => ({title: r.title, snippet: r.snippet, link: r.link}));\nreturn [{ json: { keyword: $json.keyword || $json.body || 'KEYWORD', topResults: top } }];"
+      },
+      "name": "Extract Top Results",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [750, 250]
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "=Bearer {{$env.OPENAI_API_KEY}}"
+        },
+        "body": "={\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a content creator that writes short, unique scripts and captions for social media shorts (15-60s). Avoid plagiarism and copyrighted text.\"},\n    {\"role\": \"user\", \"content\": `Return ONLY valid JSON with the following keys: \\\"script\\\": string (30-45s, 3-6 short sentences), \\\"caption\\\": string (<=150 chars), \\\"hashtags\\\": array of 5 strings, \\\"storyboard\\\": array of 6 short image prompts (strings), \\\"title\\\": short title string.\\nGenerate values based on keyword: ${$json[\"keyword\"]} and topResults: ${JSON.stringify($json[\"topResults\"])}. Output must be pure JSON with no commentary.`}\n  ],\n  \"temperature\": 0.8\n}"
+      },
+      "name": "Generate Script & Caption (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1000, 250]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse OpenAI response and extract structured fields\nconst out = [];\nlet content = '';\nif (items[0].json.choices && items[0].json.choices[0]) {\n  content = items[0].json.choices[0].message?.content || items[0].json.choices[0].text || '';\n} else if (typeof items[0].json === 'string') {\n  content = items[0].json;\n} else {\n  content = JSON.stringify(items[0].json);\n}\nlet parsed = {};\ntry {\n  parsed = JSON.parse(content);\n} catch (e) {\n  const m = content.match(/\{[\s\S]*\}/);\n  if (m) {\n    try { parsed = JSON.parse(m[0]); } catch (e2) { parsed = {}; }\n  }\n}\nconst storyboard = Array.isArray(parsed.storyboard) ? parsed.storyboard : [];\nconst storyboardPrompt = storyboard.join(' ');\nconst script = parsed.script || parsed.text || content;\nconst caption = parsed.caption || '';\nconst hashtags = Array.isArray(parsed.hashtags) ? parsed.hashtags : [];\nconst title = parsed.title || '';\nout.push({ json: { storyboard, storyboardPrompt, script, caption, hashtags, title } });\nreturn out;"
+      },
+      "name": "Prepare Media Prompts",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1250, 250]
+    },
+    {
+      "parameters": {
+        "requestMethod": "GET",
+        "url": "={{ `https://api.pexels.com/v1/search?query=${encodeURIComponent($json.storyboardPrompt || $json.prompt || 'stock photo')}&per_page=6` }}",
+        "headers": {
+          "Authorization": "={{$env.PEXELS_API_KEY}}"
+        }
+      },
+      "name": "Fetch Images (Pexels)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1500, 250]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Collect image URLs and script for TTS\nconst images = items[0].json.photos ? items[0].json.photos.map(p => p.src.medium) : [];\nconst prev = $items(\"Prepare Media Prompts\")[0].json || {};\nreturn [{ json: { images, script: prev.script || '', caption: prev.caption || '', hashtags: prev.hashtags || [], title: prev.title || '' } }];"
+      },
+      "name": "Collect Media + Script",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1750, 250]
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "https://api.elevenlabs.io/v1/text-to-speech/default/stream",
+        "headers": {
+          "xi-api-key": "= {{$env.ELEVENLABS_KEY}}",
+          "Content-Type": "application/json"
+        },
+        "body": "={ \"text\": $json.script, \"voice\": \"alloy\" }",
+        "responseFormat": "file"
+      },
+      "name": "Generate Voiceover (TTS)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [2000, 250]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare Cloudinary upload payloads: upload images then combine into video with audio overlay.\nreturn [{ json: { cloudinary_instructions: 'Upload images & audio then call video transform API. Sample steps in README.' } }];"
+      },
+      "name": "Prepare Video Assembly",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2250, 250]
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "={{ $env.FFMPEG_SERVICE_URL || 'http://localhost:3000/assemble' }}",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "={ \"images\": $items(\"Collect Media + Script\")[0].json.images, \"audio\": $items(\"Generate Voiceover (TTS)\")[0].json.url || $items(\"Generate Voiceover (TTS)\")[0].json.fileUrl || $json.audio }",
+        "responseFormat": "json"
+      },
+      "name": "(Placeholder) Cloudinary Video Assemble",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [2500, 250]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Merge assembler response with earlier metadata for upload\nconst prevCollect = $items('Collect Media + Script')[0]?.json || {};\nconst prevPrepare = $items('Prepare Media Prompts')[0]?.json || {};\nconst assembler = items[0].json || {};\nconst videoUrl = assembler.url || assembler.output || assembler.fileUrl || (assembler.body && assembler.body.url) || '';\nconst title = prevCollect.title || prevPrepare.title || prevCollect.caption || prevPrepare.storyboard?.[0] || '';\nconst caption = prevCollect.caption || prevPrepare.caption || '';\nconst hashtags = Array.isArray(prevCollect.hashtags) ? prevCollect.hashtags : (Array.isArray(prevPrepare.hashtags) ? prevPrepare.hashtags : []);\nreturn [{ json: { videoUrl, title, caption, hashtags } }];"
+      },
+      "name": "Prepare Upload Payload",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2625, 250]
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+        "headers": {
+          "Authorization": "=Bearer {{$credentials.googleOAuth2.access_token}}",
+          "Content-Type": "application/json; charset=UTF-8"
+        },
+        "body": "={\n  \"snippet\": {\n    \"title\": $json.title || ($json.keyword + ' — Short'),\n    \"description\": $json.caption || '',\n    \"tags\": $json.hashtags || []\n  },\n  \"status\": {\n    \"privacyStatus\": \"public\"\n  }\n}"
+      },
+      "name": "Upload to YouTube (init)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [2750, 250]
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "={{ ($env.FFMPEG_SERVICE_URL || 'http://localhost:3000') + '/record' }}",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "={ \"key\": $json.keyword || '', \"title\": $json.title || '', \"url\": $json.videoUrl || $json.url || '', \"platform\": \"youtube\" }",
+        "responseFormat": "json"
+      },
+      "name": "Record Published",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [2875, 250]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Final node: output summary and publish links placeholder\nreturn [{ json: { status: 'done', note: 'Video created and uploaded. Use the README to complete cloudinary + youtube multipart upload details.' } }];"
+      },
+      "name": "Finish / Output",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [3000, 250]
+    }
+  ],
+  "connections": {
+    "Cron Trigger": { "main": [[{ "node": "Check Duplicate", "type": "main", "index": 0 }]] },
+    "Check Duplicate": { "main": [[{ "node": "Google / SerpAPI Search", "type": "main", "index": 0 }]] },
+    "Google / SerpAPI Search": { "main": [[{ "node": "Extract Top Results", "type": "main", "index": 0 }]] },
+    "Extract Top Results": { "main": [[{ "node": "Generate Script & Caption (OpenAI)", "type": "main", "index": 0 }]] },
+    "Generate Script & Caption (OpenAI)": { "main": [[{ "node": "Prepare Media Prompts", "type": "main", "index": 0 }]] },
+    "Prepare Media Prompts": { "main": [[{ "node": "Fetch Images (Pexels)", "type": "main", "index": 0 }]] },
+    "Fetch Images (Pexels)": { "main": [[{ "node": "Collect Media + Script", "type": "main", "index": 0 }]] },
+    "Collect Media + Script": { "main": [[{ "node": "Generate Voiceover (TTS)", "type": "main", "index": 0 }, { "node": "Prepare Video Assembly", "type": "main", "index": 0 }]] },
+    "Generate Voiceover (TTS)": { "main": [[{ "node": "(Placeholder) Cloudinary Video Assemble", "type": "main", "index": 0 }]] },
+    "(Placeholder) Cloudinary Video Assemble": { "main": [[{ "node": "Prepare Upload Payload", "type": "main", "index": 0 }]] },
+    "Prepare Upload Payload": { "main": [[{ "node": "Upload to YouTube (init)", "type": "main", "index": 0 }]] },
+    "Upload to YouTube (init)": { "main": [[{ "node": "Record Published", "type": "main", "index": 0 }]] },
+    "Record Published": { "main": [[{ "node": "Finish / Output", "type": "main", "index": 0 }]] }
+  }
+}
+{
+  "name": "Keyword → Unique Content → Short Video → Publish",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "hour": 9,
+              "minute": 0
+            }
+          ]
+        }
+      },
+      "name": "Cron Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [250, 250]
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "=Bearer {{$env.OPENAI_API_KEY}}"
+        },
+        "body": "={\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a content creator that writes short, unique scripts and captions for social media shorts (15-60s). Avoid plagiarism and copyrighted text.\"},\n    {\"role\": \"user\", \"content\": `Return ONLY valid JSON with the following keys: \\\"script\\\": string (30-45s, 3-6 short sentences), \\\"caption\\\": string (<=150 chars), \\\"hashtags\\\": array of 5 strings, \\\"storyboard\\\": array of 6 short image prompts (strings), \\\"title\\\": short title string.\\nGenerate values based on keyword: ${$json[\"keyword\"]} and topResults: ${JSON.stringify($json[\"topResults\"])}. Output must be pure JSON with no commentary.`}\n  ],\n  \"temperature\": 0.8\n}"
+      },
+            {
+              "name": "engine",
+              "value": "google"
+            },
+            {
+              "name": "api_key",
+              "value": "={{$env.SERPAPI_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Google / SerpAPI Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [500, 250]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Extract title/snippets and create a concise brief\nconst results = items[0].json.organic_results || [];
+const top = results.slice(0,5).map(r => ({title: r.title, snippet: r.snippet, link: r.link}));
+return [{ json: { keyword: $json.keyword || $json.body || 'KEYWORD', topResults: top } }];"
+      },
+      "name": "Extract Top Results",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [750, 250]
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "=Bearer {{$env.OPENAI_API_KEY}}"
+        },
+        "body": "={\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a content creator that writes short, unique scripts and captions for social media shorts (15-60s). No copyrighted text.\"},\n    {\"role\": \"user\", \"content\": \`Create: 1) a 30-45s short video script (3-6 short sentences), 2) a short caption (max 150 chars), 3) 5 hashtags, 4) a suggested 6-image storyboard with brief image prompts, all based on keyword: $json[\"keyword\"] and top results: $json[\"topResults\"]\`}\n  ],\n  \"temperature\": 0.8\n}"        
+      },
+      "name": "Generate Script & Caption (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1000, 250]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare image fetch queries from storyboard prompts\nconst out = [];
+const content = items[0].json.choices && items[0].json.choices[0] && items[0].json.choices[0].message ? items[0].json.choices[0].message.content : items[0].json;
+// naive extraction: expect JSON lines separated. In README we show how to format prompt to return JSON for robust parsing.
+out.push({ json: { storyboardPrompt: 'Extracted prompts placeholder', script: content } });
+return out;"
+      },
+      "name": "Prepare Media Prompts",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1250, 250]
+    },
+    {
+      "parameters": {
+        "requestMethod": "GET",
+        "url": "={{ `https://api.pexels.com/v1/search?query=${encodeURIComponent($json.storyboardPrompt || $json.prompt || 'stock photo')}&per_page=6` }}",
+        "headers": {
+          "Authorization": "={{$env.PEXELS_API_KEY}}"
+        }
+      },
+      "name": "Fetch Images (Pexels)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1500, 250]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Collect image URLs and script for TTS\nconst images = items[0].json.photos ? items[0].json.photos.map(p => p.src.medium) : [];
+return [{ json: { images, script: $items("Prepare Media Prompts")[0].json.script } }];"
+      },
+      "name": "Collect Media + Script",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1750, 250]
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "https://api.elevenlabs.io/v1/text-to-speech/default/stream",
+        "headers": {
+          "xi-api-key": "= {{$env.ELEVENLABS_KEY}}",
+          "Content-Type": "application/json"
+        },
+        "body": "={ \"text\": $json.script, \"voice\": \"alloy\" }",
+        "responseFormat": "file"
+      },
+      "name": "Generate Voiceover (TTS)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [2000, 250]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare Cloudinary upload payloads: upload images then combine into video with audio overlay.\nreturn [{ json: { cloudinary_instructions: 'Upload images & audio then call video transform API. Sample steps in README.' } }];"
+      },
+      "name": "Prepare Video Assembly",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2250, 250]
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "resource": "file",
+        "url": "=https://api.cloudinary.com/v1_1/REPLACE_CLOUD_NAME/resources/video/upload",
+        "options": {}
+      },
+      "name": "(Placeholder) Cloudinary Video Assemble",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [2500, 250]
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+        "headers": {
+          "Authorization": "=Bearer {{$credentials.googleOAuth2.access_token}}",
+          "Content-Type": "application/json; charset=UTF-8"
+        },
+        "body": "={\n  \"snippet\": {\n    \"title\": $json.title || ($json.keyword + ' — Short'),\n    \"description\": $json.caption || '',\n    \"tags\": $json.hashtags || []\n  },\n  \"status\": {\n    \"privacyStatus\": \"public\"\n  }\n}"
+      },
+      "name": "Upload to YouTube (init)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [2750, 250]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Final node: output summary and publish links placeholder\nreturn [{ json: { status: 'done', note: 'Video created and uploaded. Use the README to complete cloudinary + youtube multipart upload details.' } }];"
+      },
+      "name": "Finish / Output",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [3000, 250]
+    }
+  ],
+  "connections": {
+    "Cron Trigger": { "main": [[{ "node": "Google / SerpAPI Search", "type": "main", "index": 0 }]] },
+    "Google / SerpAPI Search": { "main": [[{ "node": "Extract Top Results", "type": "main", "index": 0 }]] },
+    "Extract Top Results": { "main": [[{ "node": "Generate Script & Caption (OpenAI)", "type": "main", "index": 0 }]] },
+    "Generate Script & Caption (OpenAI)": { "main": [[{ "node": "Prepare Media Prompts", "type": "main", "index": 0 }]] },
+    "Prepare Media Prompts": { "main": [[{ "node": "Fetch Images (Pexels)", "type": "main", "index": 0 }]] },
+    "Fetch Images (Pexels)": { "main": [[{ "node": "Collect Media + Script", "type": "main", "index": 0 }]] },
+    "Collect Media + Script": { "main": [[{ "node": "Generate Voiceover (TTS)", "type": "main", "index": 0 }, { "node": "Prepare Video Assembly", "type": "main", "index": 0 }]] },
+    "Generate Voiceover (TTS)": { "main": [[{ "node": "(Placeholder) Cloudinary Video Assemble", "type": "main", "index": 0 }]] },
+    "(Placeholder) Cloudinary Video Assemble": { "main": [[{ "node": "Upload to YouTube (init)", "type": "main", "index": 0 }]] },
+    "Upload to YouTube (init)": { "main": [[{ "node": "Finish / Output", "type": "main", "index": 0 }]] }
+  }
+}
