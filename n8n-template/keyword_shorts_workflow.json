@@ -1,5 +1,13 @@
 {
   "name": "Keyword → Unique Content → Short Video → Publish",
+  "requiredCredentials": {
+    "openAI": { "displayName": "OpenAI Account", "fields": ["apiKey"] },
+    "serpapiApi": { "displayName": "SerpAPI Account", "fields": ["apiKey"] },
+    "pexels": { "displayName": "Pexels Account", "fields": ["apiKey"] },
+    "elevenlabs": { "displayName": "ElevenLabs Account", "fields": ["apiKey"] },
+    "googleOAuth2": { "displayName": "Google OAuth2", "fields": [] },
+    "workflowConfig": { "displayName": "Workflow Config", "fields": ["googleSheetId","ffmpegServiceUrl"] }
+  },
   "nodes": [
     {
       "parameters": {
@@ -19,14 +27,28 @@
     },
     {
       "parameters": {
+        "resource": "spreadsheet",
+        "operation": "getAll",
+        "spreadsheetId": "={{$credentials.workflowConfig.googleSheetId}}",
+        "sheetName": "published",
+        "range": "A2:E",
+        "options": {}
+      },
+      "name": "Get Published",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 1,
+      "position": [375, 250]
+    },
+    {
+      "parameters": {
         "requestMethod": "GET",
-        "url": "={{ ($env.FFMPEG_SERVICE_URL || 'http://localhost:3000') + '/check?key=' + encodeURIComponent($json.keyword || $json.body || 'untitled') }}",
+        "url": "={{ ($credentials.workflowConfig.ffmpegServiceUrl || 'http://localhost:3000') + '/check?key=' + encodeURIComponent($json.keyword || $json.body || 'untitled') }}",
         "options": {}
       },
       "name": "Check Duplicate",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 1,
-      "position": [375, 250]
+      "position": [500, 250]
     },
     {
       "parameters": {
@@ -44,7 +66,7 @@
             },
             {
               "name": "api_key",
-              "value": "={{$env.SERPAPI_KEY}}"
+              "value": "={{$credentials.serpapiApi.apiKey}}"
             }
           ]
         },
@@ -70,9 +92,9 @@
         "url": "https://api.openai.com/v1/chat/completions",
         "headers": {
           "Content-Type": "application/json",
-          "Authorization": "=Bearer {{$env.OPENAI_API_KEY}}"
+          "Authorization": "=Bearer {{$credentials.openAI.apiKey}}"
         },
-        "body": "={\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a content creator that writes short, unique scripts and captions for social media shorts (15-60s). Avoid plagiarism and copyrighted text.\"},\n    {\"role\": \"user\", \"content\": `Return ONLY valid JSON with the following keys: \\\"script\\\": string (30-45s, 3-6 short sentences), \\\"caption\\\": string (<=150 chars), \\\"hashtags\\\": array of 5 strings, \\\"storyboard\\\": array of 6 short image prompts (strings), \\\"title\\\": short title string.\\nGenerate values based on keyword: ${$json[\"keyword\"]} and topResults: ${JSON.stringify($json[\"topResults\"])}. Output must be pure JSON with no commentary.`}\n  ],\n  \"temperature\": 0.8\n}"
+        "body": "={\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a content creator that writes short, unique scripts and captions for social media shorts (15-60s). Avoid plagiarism and copyrighted text.\"},\n    {\"role\": \"user\", \"content\": `Return ONLY valid JSON with the following keys: \\\"script\\\": string (30-45s, 3-6 short sentences), \\\"caption\\\": string (<=150 chars), \\\"hashtags\\\": array of 5 strings, \\\"storyboard\\\": array of 6 short image prompts (strings), \\\"title\\\": short title string.\\nGenerate values based on keyword: ${$json[\\"keyword\\"]} and topResults: ${JSON.stringify($json[\\"topResults\\"])}. Output must be pure JSON with no commentary.`}\n  ],\n  \"temperature\": 0.8\n}"
       },
       "name": "Generate Script & Caption (OpenAI)",
       "type": "n8n-nodes-base.httpRequest",
@@ -93,7 +115,7 @@
         "requestMethod": "GET",
         "url": "={{ `https://api.pexels.com/v1/search?query=${encodeURIComponent($json.storyboardPrompt || $json.prompt || 'stock photo')}&per_page=6` }}",
         "headers": {
-          "Authorization": "={{$env.PEXELS_API_KEY}}"
+          "Authorization": "={{$credentials.pexels.apiKey}}"
         }
       },
       "name": "Fetch Images (Pexels)",
@@ -115,7 +137,7 @@
         "requestMethod": "POST",
         "url": "https://api.elevenlabs.io/v1/text-to-speech/default/stream",
         "headers": {
-          "xi-api-key": "= {{$env.ELEVENLABS_KEY}}",
+          "xi-api-key": "={{$credentials.elevenlabs.apiKey}}",
           "Content-Type": "application/json"
         },
         "body": "={ \"text\": $json.script, \"voice\": \"alloy\" }",
@@ -138,7 +160,7 @@
     {
       "parameters": {
         "requestMethod": "POST",
-        "url": "={{ $env.FFMPEG_SERVICE_URL || 'http://localhost:3000/assemble' }}",
+        "url": "={{ $credentials.workflowConfig.ffmpegServiceUrl || 'http://localhost:3000/assemble' }}",
         "headers": {
           "Content-Type": "application/json"
         },
@@ -177,7 +199,7 @@
     {
       "parameters": {
         "requestMethod": "POST",
-        "url": "={{ ($env.FFMPEG_SERVICE_URL || 'http://localhost:3000') + '/record' }}",
+        "url": "={{ ($credentials.workflowConfig.ffmpegServiceUrl || 'http://localhost:3000') + '/record' }}",
         "headers": {
           "Content-Type": "application/json"
         },
@@ -200,7 +222,8 @@
     }
   ],
   "connections": {
-    "Cron Trigger": { "main": [[{ "node": "Check Duplicate", "type": "main", "index": 0 }]] },
+    "Cron Trigger": { "main": [[{ "node": "Get Published", "type": "main", "index": 0 }]] },
+    "Get Published": { "main": [[{ "node": "Check Duplicate", "type": "main", "index": 0 }]] },
     "Check Duplicate": { "main": [[{ "node": "Google / SerpAPI Search", "type": "main", "index": 0 }]] },
     "Google / SerpAPI Search": { "main": [[{ "node": "Extract Top Results", "type": "main", "index": 0 }]] },
     "Extract Top Results": { "main": [[{ "node": "Generate Script & Caption (OpenAI)", "type": "main", "index": 0 }]] },
@@ -240,7 +263,7 @@
         "url": "https://api.openai.com/v1/chat/completions",
         "headers": {
           "Content-Type": "application/json",
-          "Authorization": "=Bearer {{$env.OPENAI_API_KEY}}"
+          "Authorization": "=Bearer {{$credentials.openAI.apiKey}}"
         },
         "body": "={\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a content creator that writes short, unique scripts and captions for social media shorts (15-60s). Avoid plagiarism and copyrighted text.\"},\n    {\"role\": \"user\", \"content\": `Return ONLY valid JSON with the following keys: \\\"script\\\": string (30-45s, 3-6 short sentences), \\\"caption\\\": string (<=150 chars), \\\"hashtags\\\": array of 5 strings, \\\"storyboard\\\": array of 6 short image prompts (strings), \\\"title\\\": short title string.\\nGenerate values based on keyword: ${$json[\"keyword\"]} and topResults: ${JSON.stringify($json[\"topResults\"])}. Output must be pure JSON with no commentary.`}\n  ],\n  \"temperature\": 0.8\n}"
       },
@@ -250,7 +273,7 @@
             },
             {
               "name": "api_key",
-              "value": "={{$env.SERPAPI_KEY}}"
+              "value": "={{$credentials.serpapiApi.apiKey}}"
             }
           ]
         },
@@ -305,7 +328,7 @@ return out;"
         "requestMethod": "GET",
         "url": "={{ `https://api.pexels.com/v1/search?query=${encodeURIComponent($json.storyboardPrompt || $json.prompt || 'stock photo')}&per_page=6` }}",
         "headers": {
-          "Authorization": "={{$env.PEXELS_API_KEY}}"
+          "Authorization": "={{$credentials.pexels.apiKey}}"
         }
       },
       "name": "Fetch Images (Pexels)",
@@ -328,7 +351,7 @@ return [{ json: { images, script: $items("Prepare Media Prompts")[0].json.script
         "requestMethod": "POST",
         "url": "https://api.elevenlabs.io/v1/text-to-speech/default/stream",
         "headers": {
-          "xi-api-key": "= {{$env.ELEVENLABS_KEY}}",
+          "xi-api-key": "={{$credentials.elevenlabs.apiKey}}",
           "Content-Type": "application/json"
         },
         "body": "={ \"text\": $json.script, \"voice\": \"alloy\" }",

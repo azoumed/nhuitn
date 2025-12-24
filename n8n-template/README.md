@@ -186,6 +186,58 @@ Notes:
 - I cannot include image screenshots in this README, but the snippets above are exact copy-paste content for the node fields.
 
 If you want, I can now: 1) update the README with example Airtable/Google Sheets wiring for duplication tracking, or 2) produce a short checklist for running a full end-to-end local test (start assembler, run `test_request.js`, then run the n8n flow). Which next? 
+
+**Google Sheets (gratuit) — configuration & n8n nodes**
+
+1) Créer la feuille
+- Créez une Google Sheet nommée `published` (ou autre) et mettez l'en-tête en première ligne exactement :
+
+	key,title,url,platform,publishedAt
+
+- Copiez l'ID du spreadsheet (dans l'URL) — vous en aurez besoin dans n8n.
+
+2) Vérifier le doublon (nœud `Get All` + Function)
+- Nœud 1 — `Get Published` (Google Sheets)
+	- Resource: `Spreadsheet` (Google Sheets)
+	- Operation: `Get All` (ou `Get Many`)
+	- Spreadsheet ID: *votre Spreadsheet ID*
+	- Sheet Name: `Sheet1` ou `published`
+	- Range: `A2:E` (lit toutes les lignes)
+
+- Nœud 2 — `Check Duplicate` (Function)
+	- Code (copiez dans un node Function) :
+
+```
+const key = ($json.keyword || $json.body || '').toString().trim().toLowerCase();
+const rows = $items('Get Published') || [];
+const found = rows.find(r => (r.json.key || '').toString().trim().toLowerCase() === key);
+return [{ json: { exists: !!found, record: found ? found.json : null } }];
+```
+
+3) Enregistrer la publication (nœud `Append`)
+- Nœud — `Record Published` (Google Sheets)
+	- Resource: `Spreadsheet`
+	- Operation: `Append`
+	- Spreadsheet ID: *votre Spreadsheet ID*
+	- Sheet Name: `Sheet1` (ou `published`)
+	- Range: `A:E`
+	- Values: utilisez des expressions pour insérer les valeurs, par exemple :
+
+```
+={{ [$json.keyword || '', $json.title || '', $json.videoUrl || $json.url || '', 'youtube', new Date().toISOString()] }}
+```
+
+4) Exemple d'enchaînement dans le flow
+- `Cron Trigger` → `Get Published` → `Check Duplicate` (Function)
+	- Si `exists=true` → arrêter / log
+	- Sinon → continuer vers `Google / SerpAPI Search` → génération → assembleur → upload
+- Après upload réussi → `Record Published` (Append) pour stocker le `key,title,url,platform,publishedAt`
+
+5) Remarques
+- Google Sheets est gratuit et rapide à configurer mais devient moins fiable sur de très gros volumes. Ce wiring est idéal pour prototyper sans frais.
+- Pour automatiser proprement, créez dans Google Cloud un projet OAuth et enregistrez des identifiants OAuth pour n8n (ou utilisez n8n cloud credentials). Voir la doc n8n pour `Google Sheets` node OAuth setup.
+
+Fichier modèle: `n8n-template/google_sheet_template.csv` (copiez/importe dans Google Sheets si vous voulez démarrer rapidement).
 # n8n template — Keyword → Unique Shorts → Publish
 
 Overview
